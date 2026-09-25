@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Dataset files - DO NOT PUSH
+dataset/train/
+dataset/test/
+
+# Generated / processed data
+dataset/processed/
+code/business_entity_resolution/samples/
+code/business_entity_resolution/outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
