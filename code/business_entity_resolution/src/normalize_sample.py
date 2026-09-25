@@ -223,6 +223,133 @@ INDIA_STATE_MAP = {
 }
 
 US_STATE_FULL_SET = set(US_STATE_MAP.values())
+# Native-script state / UT aliases.
+# These are used for state recognition BEFORE transliteration, so an
+# Indic-script state name is matched exactly instead of relying on a
+# phonetic transliteration such as "amdhrapradesh".
+INDIA_NATIVE_STATE_MAP = {
+    # Andhra Pradesh
+    "ఆంధ్రప్రదేశ్": "andhra pradesh",
+    "आंध्र प्रदेश": "andhra pradesh",
+
+    # Arunachal Pradesh
+    "अरुणाचल प्रदेश": "arunachal pradesh",
+
+    # Assam
+    "অসম": "assam",
+    "অসমীয়া": "assam",
+
+    # Bihar
+    "बिहार": "bihar",
+
+    # Chhattisgarh
+    "छत्तीसगढ़": "chhattisgarh",
+
+    # Goa
+    "गोवा": "goa",
+
+    # Gujarat
+    "ગુજરાત": "gujarat",
+    "ગુજરાત રાજ્ય": "gujarat",
+
+    # Haryana
+    "हरियाणा": "haryana",
+    "ਹਰਿਆਣਾ": "haryana",
+
+    # Himachal Pradesh
+    "हिमाचल प्रदेश": "himachal pradesh",
+
+    # Jharkhand
+    "झारखंड": "jharkhand",
+
+    # Karnataka
+    "ಕರ್ನಾಟಕ": "karnataka",
+    "ಕರ್ನಾಟಕ ರಾಜ್ಯ": "karnataka",
+
+    # Kerala
+    "കേരളം": "kerala",
+    "കേരള": "kerala",
+
+    # Madhya Pradesh
+    "मध्य प्रदेश": "madhya pradesh",
+
+    # Maharashtra
+    "महाराष्ट्र": "maharashtra",
+    "महाराष्ट्र राज्य": "maharashtra",
+
+    # Manipur
+    "मणिपुर": "manipur",
+
+    # Meghalaya
+    "मेघालय": "meghalaya",
+
+    # Mizoram
+    "मिजोरम": "mizoram",
+
+    # Nagaland
+    "नागालैंड": "nagaland",
+
+    # Odisha
+    "ओडिशा": "odisha",
+    "ଓଡ଼ିଶା": "odisha",
+    "ଓଡିଶା": "odisha",
+
+    # Punjab
+    "ਪੰਜਾਬ": "punjab",
+    "पंजाब": "punjab",
+
+    # Rajasthan
+    "राजस्थान": "rajasthan",
+
+    # Sikkim
+    "सिक्किम": "sikkim",
+
+    # Tamil Nadu
+    "தமிழ்நாடு": "tamil nadu",
+    "தமிழ்நாடு மாநிலம்": "tamil nadu",
+
+    # Telangana
+    "తెలంగాణ": "telangana",
+    "తెలంగాణ రాష్ట్రం": "telangana",
+
+    # Tripura
+    "त्रिपुरा": "tripura",
+
+    # Uttar Pradesh
+    "उत्तर प्रदेश": "uttar pradesh",
+
+    # Uttarakhand
+    "उत्तराखंड": "uttarakhand",
+    "उत्तराखण्ड": "uttarakhand",
+
+    # West Bengal
+    "পশ্চিমবঙ্গ": "west bengal",
+    "পশ্চিম বঙ্গ": "west bengal",
+    "पश्चिम बंगाल": "west bengal",
+
+    # Union Territories
+    "अंडमान और निकोबार द्वीपसमूह": "andaman and nicobar islands",
+    "ਚੰਡੀਗੜ੍ਹ": "chandigarh",
+    "चंडीगढ़": "chandigarh",
+    "दिल्ली": "delhi",
+    "दिल्ली राज्य": "delhi",
+    "जम्मू और कश्मीर": "jammu and kashmir",
+    "जम्मू कश्मीर": "jammu and kashmir",
+    "लद्दाख": "ladakh",
+    "लक्षद्वीप": "lakshadweep",
+    "पुदुच्चेरी": "puducherry",
+    "पुडुचेरी": "puducherry",
+    "पुदुचेरी": "puducherry",
+    "દાદરા અને નગર હવેલી અને દમણ અને દીવ": "dadra and nagar haveli and daman and diu",
+}
+
+# Canonicalized native aliases as token tuples.  Built once so state
+# recognition remains simple and deterministic during row processing.
+INDIA_NATIVE_STATE_TOKEN_MAP = {
+    tuple("".join(c for c in unicodedata.normalize("NFKD", part.lower()) if not unicodedata.combining(c)) for part in alias.split()): canonical
+    for alias, canonical in INDIA_NATIVE_STATE_MAP.items()
+}
+
 INDIA_STATE_FULL_SET = set(INDIA_STATE_MAP.values())
 
 
@@ -652,6 +779,89 @@ def transliterate_name(
         return ""
 
 
+def transliterate_address(
+    raw_address: str,
+) -> str:
+    """
+    Create a lookup-friendly transliterated representation of an address.
+
+    Important:
+        - Latin text is preserved.
+        - Indic-script portions are transliterated to ITRANS.
+        - Mixed-script addresses are handled token/run by token/run.
+        - The original business_address is never modified.
+        - This is an ADDITIONAL representation for blocking, not a replacement.
+    """
+
+    if (
+        not isinstance(raw_address, str)
+        or not raw_address.strip()
+        or raw_address.strip().lower() in NULL_ADDRESS_STRINGS
+    ):
+        return ""
+
+    output = []
+    current_script = None
+    current_text = []
+
+    def flush_run():
+        nonlocal current_script, current_text
+
+        if not current_text:
+            return
+
+        run = "".join(current_text)
+
+        if current_script in TRANSLITERATION_SCHEMES:
+            try:
+                # Reuse the same transliteration path already used and
+                # verified for business names.
+                transliterated_run = transliterate_name(
+                    run,
+                    current_script,
+                )
+                if transliterated_run:
+                    run = transliterated_run
+            except Exception:
+                # Preserve the original run if transliteration fails.
+                pass
+
+        output.append(run)
+        current_text = []
+        current_script = None
+
+    for char in raw_address:
+        code_point = ord(char)
+        char_script = None
+
+        for script, (low, high) in SCRIPT_RANGES.items():
+            if low <= code_point <= high:
+                char_script = script
+                break
+
+        # Keep Latin letters, digits, whitespace and punctuation together.
+        # Only Indic script runs need transliteration.
+        if char_script != current_script:
+            flush_run()
+            current_script = char_script
+
+        current_text.append(char)
+
+    flush_run()
+
+    transliterated = "".join(output)
+    transliterated = unicode_safe_punctuation_to_spaces(
+        transliterated
+    )
+    transliterated = fold_for_lookup(transliterated)
+    transliterated = transliterated.lower()
+
+    return MULTI_SPACE.sub(
+        " ",
+        transliterated,
+    ).strip()
+
+
 def build_name_variants(
     raw_name: str,
 ) -> dict:
@@ -812,22 +1022,105 @@ def state_maps_for_country(
     )
 
 
+def _normalized_tokens(tokens: list[str]) -> list[str]:
+    """Normalize tokens for deterministic state lookup."""
+    return [
+        fold_for_lookup(
+            token.lower()
+        )
+        for token in tokens
+    ]
+
+
+def _find_native_india_state(
+    tokens: list[str],
+) -> tuple[str, int]:
+    """
+    Find an exact native-script Indian state/UT name.
+
+    Returns:
+        (canonical_state, start_position)
+    """
+    normalized = _normalized_tokens(tokens)
+
+    # Prefer the longest native state alias so multi-word names
+    # such as "west bengal" are handled correctly.
+    aliases = sorted(
+        INDIA_NATIVE_STATE_TOKEN_MAP.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+
+    for alias_tokens, canonical in aliases:
+
+        width = len(alias_tokens)
+
+        if width == 0 or width > len(normalized):
+            continue
+
+        for i in range(
+            len(normalized) - width + 1
+        ):
+
+            if tuple(
+                normalized[
+                    i:i + width
+                ]
+            ) == alias_tokens:
+
+                return canonical, i
+
+    return "", -1
+
+
+def _abbreviation_allowed_position(
+    index: int,
+    token_count: int,
+) -> bool:
+    """
+    State abbreviations are short and ambiguous.
+
+    Examples:
+        HP in "Opp. HP Petrol Bunk" is NOT a state.
+        MH in "MH, Mumbai" IS a state.
+        UP in "... Kushinagar, UP" IS a state.
+
+    Therefore abbreviations are accepted only at the beginning
+    or in the final three tokens of an address.
+    """
+    return (
+        index == 0
+        or index >= max(0, token_count - 3)
+    )
+
+
 def normalize_state_token(
     tokens: list[str],
     country: str,
 ) -> str:
+
+    country = normalize_country(country)
+
+    # ------------------------------------------------------------------------
+    # INDIA: exact native-script state/UT matching first.
+    # ------------------------------------------------------------------------
+    if country == "india":
+
+        native_state, _ = _find_native_india_state(tokens)
+
+        if native_state:
+            return native_state
 
     (
         abbreviation_map,
         full_states,
     ) = state_maps_for_country(country)
 
-    normalized = [
-        fold_for_lookup(
-            token.lower()
-        )
-        for token in tokens
-    ]
+    normalized = _normalized_tokens(tokens)
+
+    # ------------------------------------------------------------------------
+    # Full state names can occur anywhere in the address.
+    # ------------------------------------------------------------------------
 
     # Two-word state names first.
     for i in range(
@@ -845,16 +1138,33 @@ def normalize_state_token(
         if candidate in full_states:
             return candidate
 
-    # Then one-word state names / abbreviations.
+    # One-word full state names.
     for token in reversed(normalized):
 
-        if token in abbreviation_map:
+        if token in full_states:
+            return token
+
+    # ------------------------------------------------------------------------
+    # Abbreviations are checked separately because they are ambiguous.
+    # ------------------------------------------------------------------------
+
+    for i in range(
+        len(normalized) - 1,
+        -1,
+        -1,
+    ):
+
+        token = normalized[i]
+
+        if (
+            token in abbreviation_map
+            and _abbreviation_allowed_position(
+                i,
+                len(normalized),
+            )
+        ):
 
             return abbreviation_map[token]
-
-        if token in full_states:
-
-            return token
 
     return ""
 
@@ -864,19 +1174,26 @@ def find_state_position(
     country: str,
 ) -> int:
 
+    country = normalize_country(country)
+
+    # ------------------------------------------------------------------------
+    # INDIA: exact native-script state/UT matching first.
+    # ------------------------------------------------------------------------
+    if country == "india":
+
+        _, native_position = _find_native_india_state(tokens)
+
+        if native_position >= 0:
+            return native_position
+
     (
         abbreviation_map,
         full_states,
     ) = state_maps_for_country(country)
 
-    normalized = [
-        fold_for_lookup(
-            token.lower()
-        )
-        for token in tokens
-    ]
+    normalized = _normalized_tokens(tokens)
 
-    # Two-word states.
+    # Two-word full state names.
     for i in range(
         len(normalized) - 2,
         -1,
@@ -890,10 +1207,19 @@ def find_state_position(
         )
 
         if candidate in full_states:
-
             return i
 
-    # Single-token states / abbreviations.
+    # One-word full state names.
+    for i in range(
+        len(normalized) - 1,
+        -1,
+        -1,
+    ):
+
+        if normalized[i] in full_states:
+            return i
+
+    # Abbreviations only at safe positions.
     for i in range(
         len(normalized) - 1,
         -1,
@@ -901,16 +1227,16 @@ def find_state_position(
     ):
 
         if (
-            normalized[i]
-            in abbreviation_map
-            or normalized[i]
-            in full_states
+            normalized[i] in abbreviation_map
+            and _abbreviation_allowed_position(
+                i,
+                len(normalized),
+            )
         ):
 
             return i
 
     return -1
-
 
 def extract_postal_code(
     tokens: list[str],
@@ -1110,12 +1436,27 @@ def extract_address_fields(
             "street_num": "",
             "state_token": "",
             "locality_tokens": "",
+            "address_transliterated": "",
         }
 
     tokens = tokenize_address(
         raw_address
     )
 
+    # Additional lookup representation for addresses written in
+    # Indic scripts. The original address and original tokens remain
+    # unchanged and are still used for the existing extraction logic.
+    address_transliterated = transliterate_address(
+        raw_address
+    )
+
+    transliterated_tokens = tokenize_address(
+        address_transliterated
+    )
+
+    # First use the existing state matching on the original address.
+    # If the state is written in an Indic script, fall back to the
+    # transliterated representation.
     state_token = (
         normalize_state_token(
             tokens,
@@ -1130,14 +1471,63 @@ def extract_address_fields(
         )
     )
 
+    # Keep the original-token extraction as the primary path.
+    postal_tokens = tokens
+    postal_state_position = state_position
+
+    # If the state is written in an Indic script, fall back to the
+    # transliterated address for state recognition and postal context.
+    if (
+        not state_token
+        and transliterated_tokens
+    ):
+        transliterated_state_token = (
+            normalize_state_token(
+                transliterated_tokens,
+                country,
+            )
+        )
+
+        if transliterated_state_token:
+            state_token = transliterated_state_token
+            postal_tokens = transliterated_tokens
+            postal_state_position = (
+                find_state_position(
+                    transliterated_tokens,
+                    country,
+                )
+            )
+
     (
         pin_code,
         zip_code,
     ) = extract_postal_code(
-        tokens,
+        postal_tokens,
         country,
-        state_position,
+        postal_state_position,
     )
+
+    # If the original-script representation did not expose the
+    # postal code cleanly, use the transliterated representation
+    # as a fallback. Digits are preserved by transliteration.
+    if (
+        not pin_code
+        and not zip_code
+        and transliterated_tokens
+        and postal_tokens is tokens
+    ):
+        transliterated_state_position = (
+            find_state_position(
+                transliterated_tokens,
+                country,
+            )
+        )
+
+        pin_code, zip_code = extract_postal_code(
+            transliterated_tokens,
+            country,
+            transliterated_state_position,
+        )
 
     postal_values = {
         pin_code,
@@ -1257,7 +1647,56 @@ def extract_address_fields(
 
     locality = []
 
-    for token in remaining:
+    # Exclude the native-script state/UT tokens from locality output as well.
+    native_state_indices = set()
+
+    if country_norm == "india":
+        _, native_start = _find_native_india_state(tokens)
+
+        if native_start >= 0:
+            native_state_tokens, _ = _find_native_india_state(tokens)
+
+            native_alias_tokens = None
+
+            normalized_tokens = _normalized_tokens(tokens)
+
+            for alias_tokens, canonical in sorted(
+                INDIA_NATIVE_STATE_TOKEN_MAP.items(),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            ):
+                width = len(alias_tokens)
+
+                if (
+                    width > 0
+                    and native_start + width <= len(normalized_tokens)
+                    and tuple(
+                        normalized_tokens[
+                            native_start:native_start + width
+                        ]
+                    ) == alias_tokens
+                    and canonical == native_state_tokens
+                ):
+                    native_alias_tokens = alias_tokens
+                    for j in range(
+                        native_start,
+                        native_start + width,
+                    ):
+                        native_state_indices.add(j)
+                    break
+
+    # Map remaining tokens back to their original token positions.
+    # This lets us exclude native-script state tokens precisely.
+    remaining_with_positions = [
+        (index, token)
+        for index, token in enumerate(tokens)
+        if token not in postal_values
+    ]
+
+    for original_index, token in remaining_with_positions:
+
+        if original_index in native_state_indices:
+            continue
 
         lookup = fold_for_lookup(
             token.lower()
@@ -1304,6 +1743,11 @@ def extract_address_fields(
                     locality
                 )
             ),
+
+        # Additional address representation for blocking. The
+        # original address remains untouched.
+        "address_transliterated":
+            address_transliterated,
     }
 
 
@@ -1763,7 +2207,7 @@ def main():
     print(
         "has_address, pin_code, zip_code, "
         "street_num, state_token, "
-        "locality_tokens"
+        "locality_tokens, address_transliterated"
     )
 
 
