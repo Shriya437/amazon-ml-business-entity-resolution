@@ -14,6 +14,7 @@ dataset/test/
 
 # Generated / processed data
 dataset/processed/
+processed_data/
 code/business_entity_resolution/samples/
 code/business_entity_resolution/outputs/
 
